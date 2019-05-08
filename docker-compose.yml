@@ -1,0 +1,84 @@
+version: '3'
+
+services:
+  traefik:
+    image: traefik:latest
+    restart: always
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/traefik/traefik.toml:/traefik.toml
+      - ./data/traefik/acme.json:/acme.json
+
+  nextclouddb:
+    image: mariadb
+    volumes:
+      - ./data/db:/var/lib/mysql
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+    restart: unless-stopped
+  nextcloud:
+    image: nextcloud:latest
+    environment:
+      - MYSQL_HOST=nextclouddb
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+    depends_on:
+      - nextclouddb
+      - traefik
+    volumes:
+      - ./data/nextcloud/www:/var/www/html
+      - ./data/nextcloud/config:/var/www/html/config
+      - ./data/nextcloud/custom_apps:/var/www/html/custom_apps
+      - ./data/nextcloud/themes:/var/www/html/themes
+      - /etc/localtime:/etc/localtime:ro
+    labels:
+      - "traefik.docker.network=web"
+      - "traefik.enable=true"
+      - "traefik.basic.frontend.rule=Host:${NEXTCLOUD_HOST}"
+      - "traefik.basic.port:80"
+      - "traefik.basic.protocol=http"
+      - "traefik.backend=nextcloud"
+  rocketchat:
+    image: rocketchat/rocket.chat:latest
+    restart: unless-stopped
+    command: /bin/sh -c 'INSTANCE_IP=$$(hostname -i) node main.js'
+    volumes:
+     - ./data/chat/uploads:/app/uploads
+     - /tmp:/tmp
+    environment:
+     - PORT=3000
+     - ROOT_URL=https://${ROCKETCHAT_HOST}
+     - MONGO_URL=mongodb://mongo:27017/rocketchat
+     - MONGO_OPLOG_URL=mongodb://mongo:27017/local
+    depends_on:
+      - mongo
+      - traefik
+    expose:
+      - "3000"
+    labels:
+      - "traefik.docker.network=web"
+      - "traefik.enable=true"
+      - "traefik.basic.frontend.rule=Host:${ROCKETCHAT_HOST}"
+      - "traefik.basic.port:3000"
+      - "traefik.basic.protocol=http"
+      - "traefik.backend=rocketchat"
+  mongo:
+    image: mongo:3.2
+    restart: unless-stopped
+    command: mongod --smallfiles --oplogSize 128 --replSet rs0
+    volumes:
+      - ./data/chat/db:/data/db
+      - ./data/chat/backups:/dump
+  mongo-init-replica:
+    image: mongo:3.2
+    command: 'mongo mongo/rocketchat --eval "rs.initiate({ _id: ''rs0'', members: [ { _id: 0, host: ''localhost:27017'' } ]})"'
+    depends_on:
+      - mongo
